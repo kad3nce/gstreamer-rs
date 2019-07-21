@@ -24,67 +24,8 @@ use gst::prelude::*;
 
 extern crate glib;
 
-extern crate gstreamer_pbutils as gst_pbutils;
-use gst_pbutils::prelude::*;
-
-#[derive(Debug, Fail)]
-#[fail(display = "Missing element {}", _0)]
-struct MissingElement(&'static str);
-
-use std::env;
-use std::error::Error as StdError;
-#[cfg(feature = "v1_10")]
-use std::sync::{Arc, Mutex};
-
-extern crate failure;
-use failure::Error;
-
-#[macro_use]
-extern crate failure_derive;
-
 #[path = "../examples-common.rs"]
 mod examples_common;
-
-fn configure_encodebin(encodebin: &gst::Element) -> Result<(), Error> {
-    // To tell the encodebin what we want it to produce, we create an EncodingProfile
-    // https://gstreamer.freedesktop.org/data/doc/gstreamer/head/gst-plugins-base-libs/html/GstEncodingProfile.html
-    // This profile consists of information about the contained audio and video formats
-    // as well as the container format we want everything to be combined into.
-
-    // Every audiostream piped into the encodebin should be encoded using vorbis.
-    let audio_profile = gst_pbutils::EncodingAudioProfileBuilder::new()
-        // .format(&gst::Caps::new_simple("audio/mpeg,mpegversion=4", &[]))
-        .format(&gst::Caps::from_string("audio/mpeg,mpegversion=4,rate=48000,channel=2,bitrate=320").unwrap())
-        .presence(0)
-        .build().unwrap();
-
-    // Every videostream piped into the encodebin should be encoded using theora.
-    let video_profile = gst_pbutils::EncodingVideoProfileBuilder::new()
-        // .format(&gst::Caps::from_string("video/x-h264,width=1920,height=1080,framerate=30000/1001").unwrap())
-        // WORKS IN VLC, NOT IN QT
-        // .format(&gst::Caps::from_string("video/x-h264,width=1280,height=720,framerate=30000/1001,bitrate=10000,bframes=2,key-int-max=60,pass=pass1,preset=veryfast").unwrap())
-
-        // .format(&gst::Caps::from_string("video/x-h264,width=1280,height=720,framerate=30000/1001,bitrate=10000,bframes=2,key-int-max=60,pass=pass1,preset=veryfast").unwrap())
-        .format(&gst::Caps::new_simple("video/x-h264", &[]))
-        .presence(0)
-        .build().unwrap();
-
-    // All streams are then finally combined into a matroska container.
-    let container_profile = gst_pbutils::EncodingContainerProfileBuilder::new()
-        .name("container")
-        // .format(&gst::Caps::new_simple("video/x-matroska", &[]))
-        .format(&gst::Caps::from_string("video/quicktime,variant=iso").unwrap())
-        .add_profile(&(video_profile))
-        .add_profile(&(audio_profile))
-        .build().unwrap();
-
-    // Finally, apply the EncodingProfile onto our encodebin element.
-    encodebin
-        .set_property("profile", &container_profile)
-        .expect("set profile property failed");
-
-    Ok(())
-}
 
 fn example_main() {
     gst::init().unwrap();
@@ -92,61 +33,7 @@ fn example_main() {
     let main_loop = glib::MainLoop::new(None, false);
 
     // This creates a pipeline by parsing the gst-launch pipeline syntax.
-    // let pipeline = gst::parse_launch("audiotestsrc ! fakesink").unwrap();
-    let pipeline = gst::Pipeline::new(None);
-    let video_src =
-        gst::ElementFactory::make("v4l2src", None).unwrap();
-    let video_queue =
-        gst::ElementFactory::make("queue", None).unwrap();
-    let video_convert = gst::ElementFactory::make("videoconvert", None).unwrap();
-    let video_scale = gst::ElementFactory::make("videoscale", None).unwrap();
-
-    let encodebin = gst::ElementFactory::make("encodebin", None).unwrap();
-    configure_encodebin(&encodebin).unwrap();
-
-    let encoder = gst::ElementFactory::make("x264enc", None).unwrap();
-    // let tune = "zerolatency";
-    // encoder.set_property("tune", &tune)
-    //     .expect("setting tune property failed");
-    let mux = gst::ElementFactory::make("mp4mux", None).unwrap();
-
-    let args: Vec<_> = env::args().collect();
-    let output_file: &str;
-
-    if args.len() == 2 {
-        output_file = args[1].as_ref();
-    } else {
-        println!("Usage: encodebin output_file");
-        std::process::exit(-1)
-    };
-    let sink = gst::ElementFactory::make("filesink", None).unwrap();
-    sink.set_property("location", &output_file)
-        .expect("setting location property failed");
-
-    let video_elements = &[&video_src, &video_queue, &video_convert, &video_scale, &encoder, &mux, &sink];
-    // let video_elements = &[&video_src, &video_queue, &video_convert, &video_scale];
-    pipeline
-        .add_many(video_elements)
-        .expect("failed to add video elements to pipeline");
-    gst::Element::link_many(video_elements).unwrap();
-
-    // let output_elements = &[&encodebin, &sink];
-    // pipeline
-    //     .add_many(output_elements)
-    //     .expect("failed to add video elements to pipeline");
-    // gst::Element::link_many(output_elements).unwrap();
-
-    // Request a sink pad from our encodebin, that can handle a raw videostream.
-    // The encodebin will then automatically create an internal pipeline, that encodes
-    // the audio stream in the format we specified in the EncodingProfile.
-    // let enc_video_sink_pad = encodebin
-    //     .get_request_pad("video_%u")
-    //     .expect("Could not get video pad from encodebin");
-    // let video_src_pad = video_scale
-    //     .get_static_pad("src")
-    //     .expect("videoscale has no srcpad");
-    // video_src_pad.link(&enc_video_sink_pad).unwrap();
-
+    let pipeline = gst::parse_launch("audiotestsrc ! fakesink").unwrap();
     let bus = pipeline.get_bus().unwrap();
 
     pipeline
@@ -236,7 +123,6 @@ fn example_main() {
     // (see above for how to do this).
     main_loop.run();
 
-    println!("Setting pipeline state to Null");
     pipeline
         .set_state(gst::State::Null)
         .expect("Unable to set the pipeline to the `Null` state");

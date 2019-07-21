@@ -62,10 +62,9 @@ fn configure_encodebin(encodebin: &gst::Element) -> Result<(), Error> {
     let video_profile = gst_pbutils::EncodingVideoProfileBuilder::new()
         // .format(&gst::Caps::from_string("video/x-h264,width=1920,height=1080,framerate=30000/1001").unwrap())
         // WORKS IN VLC, NOT IN QT
+        .format(&gst::Caps::from_string("video/x-h264,width=1280,height=720,framerate=30000/1001,bitrate=10000,bframes=2,key-int-max=60,pass=pass1,preset=veryfast").unwrap())
         // .format(&gst::Caps::from_string("video/x-h264,width=1280,height=720,framerate=30000/1001,bitrate=10000,bframes=2,key-int-max=60,pass=pass1,preset=veryfast").unwrap())
-
-        // .format(&gst::Caps::from_string("video/x-h264,width=1280,height=720,framerate=30000/1001,bitrate=10000,bframes=2,key-int-max=60,pass=pass1,preset=veryfast").unwrap())
-        .format(&gst::Caps::new_simple("video/x-h264", &[]))
+        // .format(&gst::Caps::new_simple("video/x-h264", &[]))
         .presence(0)
         .build().unwrap();
 
@@ -91,67 +90,102 @@ fn example_main() {
 
     let main_loop = glib::MainLoop::new(None, false);
 
-    // This creates a pipeline by parsing the gst-launch pipeline syntax.
-    // let pipeline = gst::parse_launch("audiotestsrc ! fakesink").unwrap();
-    let pipeline = gst::Pipeline::new(None);
-    let video_src =
-        gst::ElementFactory::make("v4l2src", None).unwrap();
-    let video_queue =
-        gst::ElementFactory::make("queue", None).unwrap();
-    let video_convert = gst::ElementFactory::make("videoconvert", None).unwrap();
-    let video_scale = gst::ElementFactory::make("videoscale", None).unwrap();
-
-    let encodebin = gst::ElementFactory::make("encodebin", None).unwrap();
-    configure_encodebin(&encodebin).unwrap();
-
-    let encoder = gst::ElementFactory::make("x264enc", None).unwrap();
-    // let tune = "zerolatency";
-    // encoder.set_property("tune", &tune)
-    //     .expect("setting tune property failed");
-    let mux = gst::ElementFactory::make("mp4mux", None).unwrap();
-
     let args: Vec<_> = env::args().collect();
+    // let uri: &str;
     let output_file: &str;
 
     if args.len() == 2 {
+        // uri = args[1].as_ref();
         output_file = args[1].as_ref();
     } else {
         println!("Usage: encodebin output_file");
         std::process::exit(-1)
     };
-    let sink = gst::ElementFactory::make("filesink", None).unwrap();
-    sink.set_property("location", &output_file)
-        .expect("setting location property failed");
 
-    let video_elements = &[&video_src, &video_queue, &video_convert, &video_scale, &encoder, &mux, &sink];
-    // let video_elements = &[&video_src, &video_queue, &video_convert, &video_scale];
-    pipeline
-        .add_many(video_elements)
-        .expect("failed to add video elements to pipeline");
-    gst::Element::link_many(video_elements).unwrap();
+    // // This creates a pipeline by parsing the gst-launch pipeline syntax.
+    // let pipeline = gst::parse_launch("audiotestsrc ! fakesink").unwrap();
 
-    // let output_elements = &[&encodebin, &sink];
-    // pipeline
-    //     .add_many(output_elements)
-    //     .expect("failed to add video elements to pipeline");
-    // gst::Element::link_many(output_elements).unwrap();
 
-    // Request a sink pad from our encodebin, that can handle a raw videostream.
-    // The encodebin will then automatically create an internal pipeline, that encodes
-    // the audio stream in the format we specified in the EncodingProfile.
-    // let enc_video_sink_pad = encodebin
-    //     .get_request_pad("video_%u")
-    //     .expect("Could not get video pad from encodebin");
-    // let video_src_pad = video_scale
-    //     .get_static_pad("src")
-    //     .expect("videoscale has no srcpad");
-    // video_src_pad.link(&enc_video_sink_pad).unwrap();
-
+    let pipeline = gst::Pipeline::new(None);
     let bus = pipeline.get_bus().unwrap();
 
     pipeline
         .set_state(gst::State::Playing)
         .expect("Unable to set the pipeline to the `Playing` state");
+
+    let encodebin =
+        gst::ElementFactory::make("encodebin", None).ok_or(MissingElement("encodebin")).unwrap();
+
+    let sink = gst::ElementFactory::make("filesink", None).ok_or(MissingElement("filesink")).unwrap();
+    sink.set_property("location", &output_file)
+        .expect("setting location property failed");
+
+    // Configure the encodebin.
+    // Here we tell the bin what format we expect it to create at its output.
+    configure_encodebin(&encodebin).unwrap();
+
+    pipeline
+        .add_many(&[&encodebin, &sink])
+        .expect("failed to add elements to pipeline");
+    // It is clear from the start, that encodebin has only one src pad, so we can
+    // directly link it to our filesink without problems.
+    // The caps of encodebin's src-pad are set after we configured the encoding-profile.
+    // (But filesink doesn't really care about the caps at its input anyway)
+    gst::Element::link_many(&[&encodebin, &sink]).unwrap();
+
+    // VIDEO
+    let video_src =
+        gst::ElementFactory::make("v4l2src", None).ok_or(MissingElement("v4l2src")).unwrap();
+    let video_queue =
+        gst::ElementFactory::make("queue", None).ok_or(MissingElement("queue")).unwrap();
+    let video_convert = gst::ElementFactory::make("videoconvert", None)
+        .ok_or(MissingElement("videoconvert")).unwrap();
+    let video_scale = gst::ElementFactory::make("videoscale", None)
+        .ok_or(MissingElement("videoscale")).unwrap();
+
+    let video_elements = &[&video_src, &video_queue, &video_convert, &video_scale];
+    pipeline
+        .add_many(video_elements)
+        .expect("failed to add video elements to pipeline");
+    gst::Element::link_many(video_elements).unwrap();
+
+    // Request a sink pad from our encodebin, that can handle a raw videostream.
+    // The encodebin will then automatically create an internal pipeline, that encodes
+    // the audio stream in the format we specified in the EncodingProfile.
+    let enc_video_sink_pad = encodebin
+        .get_request_pad("video_%u")
+        .expect("Could not get video pad from encodebin");
+    let video_src_pad = video_scale
+        .get_static_pad("src")
+        .expect("videoscale has no srcpad");
+    video_src_pad.link(&enc_video_sink_pad).unwrap();
+
+    // AUDIO
+    let audio_src =
+        gst::ElementFactory::make("alsasrc", None).ok_or(MissingElement("alsasrc")).unwrap();
+    let audio_queue =
+        gst::ElementFactory::make("queue", None).ok_or(MissingElement("queue")).unwrap();
+    let audio_convert = gst::ElementFactory::make("audioconvert", None)
+        .ok_or(MissingElement("audioconvert")).unwrap();
+    let audio_resample = gst::ElementFactory::make("audioresample", None)
+        .ok_or(MissingElement("audioresample")).unwrap();
+
+    let audio_elements = &[&audio_src, &audio_queue, &audio_convert, &audio_resample];
+    pipeline
+        .add_many(audio_elements)
+        .expect("failed to add audio elements to pipeline");
+    gst::Element::link_many(audio_elements).unwrap();
+
+    // Request a sink pad from our encodebin, that can handle a raw audiostream.
+    // The encodebin will then automatically create an internal pipeline, that encodes
+    // the audio stream in the format we specified in the EncodingProfile.
+    let enc_audio_sink_pad = encodebin
+        .get_request_pad("audio_%u")
+        .expect("Could not get audio pad from encodebin");
+    let audio_src_pad = audio_resample
+        .get_static_pad("src")
+        .expect("resample has no srcpad");
+    audio_src_pad.link(&enc_audio_sink_pad).unwrap();
 
     // Need to move a new reference into the closure.
     // !!ATTENTION!!:
@@ -206,6 +240,7 @@ fn example_main() {
     // handler is removed and will never be called again. The mainloop still runs though.
     bus.add_watch(move |_, msg| {
         use gst::MessageView;
+        println!("received a message");
 
         let main_loop = &main_loop_clone;
         match msg.view() {
@@ -236,7 +271,6 @@ fn example_main() {
     // (see above for how to do this).
     main_loop.run();
 
-    println!("Setting pipeline state to Null");
     pipeline
         .set_state(gst::State::Null)
         .expect("Unable to set the pipeline to the `Null` state");

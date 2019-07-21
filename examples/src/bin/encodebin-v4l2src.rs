@@ -76,15 +76,16 @@ fn configure_encodebin(encodebin: &gst::Element) -> Result<(), Error> {
     // as well as the container format we want everything to be combined into.
 
     // Every audiostream piped into the encodebin should be encoded using vorbis.
-    let audio_profile = gst_pbutils::EncodingAudioProfileBuilder::new()
-        // .format(&gst::Caps::new_simple("audio/mpeg,mpegversion=4", &[]))
-        .format(&gst::Caps::from_string("audio/mpeg,mpegversion=4,rate=48000,channel=2,bitrate=320").unwrap())
-        .presence(0)
-        .build()?;
+    // let audio_profile = gst_pbutils::EncodingAudioProfileBuilder::new()
+    //     // .format(&gst::Caps::new_simple("audio/mpeg,mpegversion=4", &[]))
+    //     .format(&gst::Caps::from_string("audio/mpeg,mpegversion=4,rate=48000,channel=2,bitrate=320").unwrap())
+    //     .presence(0)
+    //     .build()?;
 
     // Every videostream piped into the encodebin should be encoded using theora.
     let video_profile = gst_pbutils::EncodingVideoProfileBuilder::new()
         // .format(&gst::Caps::from_string("video/x-h264,width=1920,height=1080,framerate=30000/1001").unwrap())
+        // WORKS IN VLC, NOT IN QT
         .format(&gst::Caps::from_string("video/x-h264,width=1280,height=720,framerate=30000/1001,bitrate=10000,bframes=2,key-int-max=60,pass=pass1,preset=veryfast").unwrap())
         // .format(&gst::Caps::from_string("video/x-h264,width=1280,height=720,framerate=30000/1001,bitrate=10000,bframes=2,key-int-max=60,pass=pass1,preset=veryfast").unwrap())
         // .format(&gst::Caps::new_simple("video/x-h264", &[]))
@@ -97,7 +98,7 @@ fn configure_encodebin(encodebin: &gst::Element) -> Result<(), Error> {
         // .format(&gst::Caps::new_simple("video/x-matroska", &[]))
         .format(&gst::Caps::from_string("video/quicktime,variant=iso").unwrap())
         .add_profile(&(video_profile))
-        .add_profile(&(audio_profile))
+        // .add_profile(&(audio_profile))
         .build()?;
 
     // Finally, apply the EncodingProfile onto our encodebin element.
@@ -162,7 +163,7 @@ fn main() -> Result<(), Error> {
     let mux = gst::ElementFactory::make("mp4mux", None).unwrap();
 
     // let video_elements = &[&video_src, &video_queue, &video_convert, &video_scale, &encoder, &mux, &sink];
-    let video_elements = &[&video_src, &video_convert, &video_scale, &video_queue];
+    let video_elements = &[&video_src, &video_queue, &video_convert, &video_scale];
     pipeline
         .add_many(video_elements)
         .expect("failed to add video elements to pipeline");
@@ -174,7 +175,7 @@ fn main() -> Result<(), Error> {
     let enc_video_sink_pad = encodebin
         .get_request_pad("video_%u")
         .expect("Could not get video pad from encodebin");
-    let video_src_pad = video_queue
+    let video_src_pad = video_scale
         .get_static_pad("src")
         .expect("videoqueue has no srcpad");
     video_src_pad.link(&enc_video_sink_pad)?;
@@ -207,37 +208,7 @@ fn main() -> Result<(), Error> {
     // audio_src_pad.link(&enc_audio_sink_pad)?;
 
 
-    let ctrlc_pipeline_weak = pipeline.downgrade();
-    let ctrlc_encodebin_weak = encodebin.downgrade();
-    let ctrlc_sink_weak = sink.downgrade();
-    ctrlc::set_handler(move || {
-        println!("Received ctrl-c. Sending EOS to pipeline.");
-        let pipeline = match ctrlc_pipeline_weak.upgrade() {
-            Some(pipeline) => pipeline,
-            None => return,
-        };
-        let ev = gst::Event::new_eos().build();
-        pipeline.send_event(ev);
-
-        println!("Received ctrl-c. Sending EOS to encodebin.");
-        let encodebin = match ctrlc_encodebin_weak.upgrade() {
-            Some(encodebin) => encodebin,
-            None => return,
-        };
-        let ev2 = gst::Event::new_eos().build();
-        encodebin.send_event(ev2);
-
-        println!("Received ctrl-c. Sending EOS to filesink.");
-        let sink = match ctrlc_sink_weak.upgrade() {
-            Some(sink) => sink,
-            None => return,
-        };
-        let ev3 = gst::Event::new_eos().build();
-        sink.send_event(ev3);
-    }).expect("Error setting Ctrl-C handler");
-
     let timeout_pipeline_weak = pipeline.downgrade();
-    let timeout_src_weak = video_src.downgrade();
     // Add a timeout to the main loop. This closure will be executed
     // in an interval of 5 seconds. The return value of the handler function
     // determines whether the handler still wants to be called:
@@ -246,12 +217,12 @@ fn main() -> Result<(), Error> {
     glib::timeout_add_seconds(5, move || {
         // Here we temporarily retrieve a strong reference on the pipeline from the weak one
         // we moved into this callback.
-        let src = match timeout_src_weak.upgrade() {
-            Some(src) => src,
+        let pipeline = match timeout_pipeline_weak.upgrade() {
+            Some(pipeline) => pipeline,
             None => return glib::Continue(false),
         };
 
-        // println!("sending eos");
+        println!("sending eos");
 
         // We create an EndOfStream event here, that tells all elements to drain
         // their internal buffers to their following elements, essentially draining the
@@ -265,8 +236,7 @@ fn main() -> Result<(), Error> {
         // EOS event in the pipeline already), the pipeline would post an EOS message on the bus,
         // essentially telling the application that the pipeline is completely drained.
         let ev = gst::Event::new_eos().build();
-        // pipeline.send_event(ev);
-        // src.send_event(ev);
+        pipeline.send_event(ev);
 
         // Remove this handler, the pipeline will shutdown anyway, now that we
         // sent the EOS event.
@@ -290,9 +260,8 @@ fn main() -> Result<(), Error> {
         let main_loop = &main_loop_clone;
         match msg.view() {
             MessageView::Eos(..) => {
-                println!("Received Eos message on bus. Exiting.");
+                println!("Received Eos message on bus. Quitting main loop.");
                 main_loop.quit();
-                // std::process::exit(0)
             }
             MessageView::Error(err) => {
                 let pipeline = match bus_watch_pipeline_weak.upgrade() {
